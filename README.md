@@ -10,7 +10,7 @@ ComfortNet is a software prototype for intelligent monitoring of connected infra
 ---
 
 ## 🚀 Live Demo
-👉 **[Open ComfortNet Live Demo]https://comfortnet-hackathon.vercel.app
+👉 **[Open ComfortNet Live Demo] https://comfortnet-znen.vercel.app/
 
 ## 🎯 Problem
 
