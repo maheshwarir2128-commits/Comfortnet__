@@ -1,0 +1,40 @@
+{
+  "feature_names": [
+    "battery_percent",
+    "battery_voltage",
+    "solar_power",
+    "temperature",
+    "humidity",
+    "aqi_pm25",
+    "soil_moisture",
+    "light_level",
+    "battery_deficit",
+    "solar_load_margin",
+    "temperature_stress",
+    "environmental_stress",
+    "network_instability",
+    "battery_recovery_proxy",
+    "power_stress",
+    "soil_stress"
+  ],
+  "feature_importances": {
+    "battery_deficit": 0.17361094751980138,
+    "battery_percent": 0.1618925595351861,
+    "battery_recovery_proxy": 0.13331234916328935,
+    "battery_voltage": 0.12934613467859388,
+    "aqi_pm25": 0.0950764902794809,
+    "temperature": 0.08394961272654242,
+    "light_level": 0.034343346079339254,
+    "environmental_stress": 0.033603444769448314,
+    "power_stress": 0.03236403778360439,
+    "soil_moisture": 0.02709493559051569,
+    "humidity": 0.024703460756804747,
+    "temperature_stress": 0.022940778913533133,
+    "solar_power": 0.02204994881393901,
+    "solar_load_margin": 0.020304577019400003,
+    "network_instability": 0.005355389277779788,
+    "soil_stress": 5.198709274162521e-05
+  },
+  "importance_note": "Model feature importance \u2014 not causal attribution.",
+  "model_path": "maintenance_model.joblib"
+}

@@ -1,0 +1,27 @@
+{
+  "accuracy": 0.812,
+  "precision": 0.6930835734870316,
+  "recall": 0.7468944099378882,
+  "f1": 0.71898355754858,
+  "roc_auc": 0.8405991773392697,
+  "confusion_matrix": [
+    [
+      1143,
+      213
+    ],
+    [
+      163,
+      481
+    ]
+  ],
+  "train_samples": 6000,
+  "test_samples": 2000,
+  "train_seconds": 2.205,
+  "model_type": "RandomForestClassifier",
+  "n_estimators": 200,
+  "max_depth": 8,
+  "random_state": 42,
+  "data_source": "synthetic_telemetry",
+  "field_validated": false,
+  "production_ready": false
+}
