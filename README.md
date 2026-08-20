@@ -5,7 +5,7 @@ Technology integrated with nature
 
 > **From real-time monitoring to proactive infrastructure intelligence.**
 
-ComfortNet is a software prototype for intelligent monitoring of connected infrastructure. It combines real-time telemetry, environmental monitoring, system-health analytics, a digital-twin-style dashboard, deterministic failure scenarios, and a predictive-maintenance ML prototype into a single platform.
+ComfortNet is a software prototype for intelligent monitoring of connected infrastructure. It combines real-time telemetry, environmental monitoring, system-health analytics, a digital-twin-style dashboard, deterministic failure scenarios, and a predictive-maintenance ML prototype into a single platform that is attached in a **REAL* tree to collab tree (core pillar of sustainability) with technology*.
 
 ---
 
@@ -13,11 +13,11 @@ ComfortNet is a software prototype for intelligent monitoring of connected infra
 👉 **[Open ComfortNet Live Demo] https://comfortnet-znen.vercel.app/
 
 ## 🎯 Problem
-
+Lack of trees and increasing deforestation just for human need and greed
 Connected infrastructure can generate large amounts of telemetry, but raw sensor data alone does not provide actionable insight.
 
 Operators need to know:
-
+-How shall i protect the tree?
 - What is happening now?
 - Is the infrastructure operating normally?
 - Is a component approaching an abnormal condition?
@@ -41,6 +41,7 @@ ComfortNet combines:
 - 🤖 Predictive-maintenance ML prototype
 - ⚙️ FastAPI backend services
 - 🧪 Automated backend testing
+All these are attached in a real tree without damaging it's nature.
 
 ### Core flow
 
