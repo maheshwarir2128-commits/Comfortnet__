@@ -58,13 +58,17 @@ Analytics          ML
  ComfortNet Dashboard
         ↓
  Action / Maintenance Insight
-##Current status;
+
+### Current status;
+
 ML prototype:              ✅ Implemented
 Synthetic-data testing:   ✅ Implemented
 Backend integration:       ✅ Implemented
 Real field data:           ❌ Not yet collected
 Field validation:          ❌ Not yet performed
-##comfortnet-backend/
+
+### Comfortnet-backend/
+
 │
 ├── app/
 │   └── FastAPI backend services
@@ -85,7 +89,7 @@ Field validation:          ❌ Not yet performed
 ├── README.md
 └── ...
 
-## 🛠️ Technology Stack
+### 🛠️ Technology Stack
 
 | Layer | Technologies |
 |---|---|
