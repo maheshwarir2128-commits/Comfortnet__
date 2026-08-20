@@ -1,0 +1,1363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ComfortNet Prototype</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@500;600&family=Inter:wght@400;500;600&display=swap" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Inter', sans-serif; background: #EFEAE0; }
+  button { font-family: inherit; cursor: pointer; border: none; }
+  input { font-family: inherit; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  @keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+  .pulse { animation: pulse 1.6s ease-in-out infinite; }
+  .spin { animation: spin 5s linear infinite; display: inline-block; }
+  .spin-fast { animation: spin 0.9s linear infinite; display: inline-block; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+/* ---------- design tokens ----------
+   Bark #3D2B1F  Canopy #1E3A2B  Leaf #4C8C5B
+   Solar #F0A83C  Sky #3E7CB1  Alert #C0432E
+   Paper light #F6F2E9  Paper dark #142720
+--------------------------------------- */
+
+function theme(dark) {
+  return dark
+    ? { paper: "#142720", card: "#1E3A2B", border: "#3A5C49", ink: "#F3EEE1", sub: "#B9CBBD" }
+    : { paper: "#F6F2E9", card: "#FFFFFF", border: "#E7E0D0", ink: "#1E3A2B", sub: "#6B5A45" };
+}
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+/* ---------- backend integration (Phase C) ----------
+   STATUS: the prototype tries to reach a real local ComfortNet backend
+   (see /comfortnet-backend). If it's not running/reachable, the app
+   silently falls back to the original in-browser simulation — the UI
+   never breaks and never claims hardware is connected either way.
+------------------------------------------------------------------------ */
+const API_BASE = "http://localhost:8000";
+const DEMO_NODE_ID = "tree-01";
+
+async function fetchJSON(path, opts) {
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 2500);
+  try {
+    const res = await fetch(API_BASE + path, { ...opts, signal: ctrl.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+async function checkBackendHealth() {
+  const r = await fetchJSON("/health");
+  return !!(r && r.status);
+}
+async function fetchLatestTelemetry(nodeId) {
+  return fetchJSON(`/telemetry/${nodeId}/latest`);
+}
+async function fetchNodeHealth(nodeId) {
+  return fetchJSON(`/analytics/node/${nodeId}/health`);
+}
+async function fetchMlPrediction(nodeId) {
+  return fetchJSON(`/ml/predict/${nodeId}`, { method: "POST" });
+}
+async function fetchMlStatus() {
+  return fetchJSON("/ml/status");
+}
+async function fetchCampusSummary(campusId) {
+  return fetchJSON(`/analytics/campus/${campusId}/summary`);
+}
+async function postDemoScenario(scenario) {
+  return fetchJSON("/demo/scenario", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scenario }),
+  });
+}
+
+/* Client-side mirror of the backend's rule-based health score
+   (app/analytics_rules.py) so the Tree Detail "Health" ring means the
+   same thing whether or not the backend is reachable. Same thresholds,
+   same ASSUMPTION caveat — not AI, not validated. */
+function computeHealthScore(live) {
+  let score = 100;
+  const factors = [];
+  if (live.battery < 15) { score -= 40; factors.push("Battery critically low"); }
+  else if (live.battery < 30) { score -= 20; factors.push("Battery low"); }
+  if (live.signal < -75) { score -= 15; factors.push("Weak signal"); }
+  if (live.temp > 40) { score -= 15; factors.push("Temperature high"); }
+  if (live.aqi > 150) { score -= 10; factors.push("Air quality poor"); }
+  score = clamp(score, 0, 100);
+  const status = score < 50 ? "critical" : score < 80 ? "warning" : "healthy";
+  return { score, status, factors };
+}
+
+const tabs = [
+  { key: "Home", emoji: "🏠" },
+  { key: "Map", emoji: "🗺️" },
+  { key: "Plans", emoji: "💳" },
+  { key: "Alerts", emoji: "🔔" },
+  { key: "Assistant", emoji: "💬" },
+  { key: "Profile", emoji: "👤" },
+];
+const devScreens = ["Splash", "Login"];
+
+/* ---------- tiny building blocks ---------- */
+
+function RingGauge({ value, label, color, t, charging }) {
+  const r = 34, c = 2 * Math.PI * r;
+  const offset = c - (clamp(value, 0, 100) / 100) * c;
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: 96, height: 96 }}>
+      <svg width="88" height="88" viewBox="0 0 88 88" style={{ transform: "rotate(-90deg)" }}>
+        <circle cx="44" cy="44" r={r} stroke={t.border} strokeWidth="7" fill="none" />
+        <circle cx="44" cy="44" r={r} stroke={color} strokeWidth="7" fill="none"
+          strokeDasharray={c} strokeDashoffset={offset} strokeLinecap="round"
+          style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+      </svg>
+      <div style={{ position: "absolute", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 600, color: t.ink }}>{Math.round(value)}%</span>
+      </div>
+      {charging && (
+        <div className="pulse" style={{ position: "absolute", top: -2, right: -2, width: 20, height: 20, borderRadius: 999, background: "#F0A83C", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 3px rgba(0,0,0,.2)" }}>
+          <span style={{ fontSize: 10 }}>⚡</span>
+        </div>
+      )}
+      <span style={{ marginTop: 4, fontSize: 11, letterSpacing: 0.4, textTransform: "uppercase", fontWeight: 500, color: t.sub }}>{label}</span>
+    </div>
+  );
+}
+
+function Spark({ data, color, height = 32, width = 64 }) {
+  if (!data || data.length < 2) return <div style={{ width, height }} />;
+  const vals = data.map((d) => d.v);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const span = max - min || 1;
+  const pts = data.map((d, i) => {
+    const x = (i / (data.length - 1)) * width;
+    const y = height - ((d.v - min) / span) * height;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return (
+    <svg width={width} height={height} style={{ overflow: "visible" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+        style={{ transition: "d 0.4s ease" }} />
+    </svg>
+  );
+}
+
+function MiniChart({ data, color, height = 90 }) {
+  return (
+    <div style={{ width: "100%", height, display: "flex", alignItems: "flex-end" }}>
+      <ChartFull data={data} color={color} height={height} />
+    </div>
+  );
+}
+
+function ChartFull({ data, color, height = 90, data2, color2 }) {
+  const width = 260;
+  const mk = (d) => {
+    const vals = d.map((x) => x.v);
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const span = max - min || 1;
+    return d.map((x, i) => {
+      const px = (i / (d.length - 1)) * width;
+      const py = height - ((x.v - min) / span) * (height - 8) - 4;
+      return `${px.toFixed(1)},${py.toFixed(1)}`;
+    }).join(" ");
+  };
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} preserveAspectRatio="none">
+      <polyline points={mk(data)} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+      {data2 && <polyline points={mk(data2)} fill="none" stroke={color2} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />}
+    </svg>
+  );
+}
+
+function Row({ emoji, label, value, accent, t, trend, note, charging }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${t.border}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ position: "relative", width: 36, height: 36, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", background: accent + "1A", fontSize: 15 }}>
+          <span className={charging ? "spin" : ""}>{emoji}</span>
+          {charging && (
+            <div className="pulse" style={{ position: "absolute", top: -2, right: -2, width: 14, height: 14, borderRadius: 999, background: "#F0A83C", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontSize: 8 }}>⚡</span>
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <span style={{ fontSize: 13, color: t.ink, opacity: 0.85 }}>{label}</span>
+          {note && <span style={{ fontSize: 10, color: t.sub }}>{note}</span>}
+        </div>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        {trend && <Spark data={trend} color={accent} />}
+        <span style={{ fontSize: 13, fontFamily: "monospace", fontWeight: 500, color: t.ink }}>{value}</span>
+      </div>
+    </div>
+  );
+}
+
+function Header({ title, sub, t, right, onBack, dotColor }) {
+  return (
+    <div style={{ padding: "32px 24px 16px", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+      <div>
+        {onBack && (
+          <button onClick={onBack} style={{ background: "none", marginBottom: 8, display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: t.sub, padding: "4px 8px 4px 0" }}>
+            ‹ Back
+          </button>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <div style={{ width: 6, height: 6, borderRadius: 999, background: dotColor || "#4C8C5B" }} />
+          <span style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", color: t.sub }}>{sub}</span>
+        </div>
+        <h1 style={{ fontSize: 22, lineHeight: 1.2, fontFamily: "'Fraunces', serif", fontWeight: 600, color: t.ink, margin: 0 }}>{title}</h1>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+function Card({ children, t }) {
+  return <div style={{ margin: "0 24px", borderRadius: 16, padding: "0 16px", background: t.card, border: `1px solid ${t.border}` }}>{children}</div>;
+}
+
+function SimBadge({ t, label }) {
+  return (
+    <div style={{ margin: "0 24px 12px", display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, fontSize: 10, fontWeight: 500, background: "#3E7CB114", color: "#3E7CB1", border: "1px solid #3E7CB133" }}>
+      <span>ℹ️</span><span>{label || "SIMULATED DATA — Prototype"}</span>
+    </div>
+  );
+}
+
+/* ---------- screens ---------- */
+
+function Splash() {
+  return (
+    <div style={{ height: "100%", width: "100%", background: "#1E3A2B", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", position: "relative", overflow: "hidden" }}>
+      <svg style={{ position: "absolute", opacity: 0.08 }} width="340" height="340" viewBox="0 0 340 340">
+        {[150, 120, 90, 60, 30].map((r, i) => <circle key={i} cx="170" cy="170" r={r} stroke="#F0A83C" strokeWidth="1" fill="none" />)}
+      </svg>
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ width: 64, height: 64, borderRadius: 999, background: "#F0A83C", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 20, position: "relative" }}>
+          <span style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 30, color: "#1E3A2B" }}>இ</span>
+          <span style={{ position: "absolute", bottom: -4, right: -4, fontSize: 16 }}>🌳</span>
+        </div>
+        <h1 style={{ fontSize: 28, color: "#F6F2E9", fontFamily: "'Fraunces', serif", fontWeight: 600, margin: 0 }}>ComfortNet</h1>
+        <p style={{ fontSize: 12, color: "#F0A83C", marginTop: 8 }}>Smart Technology. Natural Harmony.</p>
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ t }) {
+  return (
+    <div style={{ height: "100%", width: "100%", background: t.paper, display: "flex", flexDirection: "column" }}>
+      <div style={{ padding: "56px 24px 24px", display: "flex", flexDirection: "column", alignItems: "center" }}>
+        <div style={{ width: 48, height: 48, borderRadius: 14, background: "#1E3A2B", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
+          <span style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: 20, color: "#F0A83C" }}>இ</span>
+        </div>
+        <h1 style={{ fontSize: 20, fontFamily: "'Fraunces', serif", fontWeight: 600, color: t.ink, margin: 0 }}>Welcome back</h1>
+        <p style={{ fontSize: 12, marginTop: 4, color: t.sub }}>Sign in with your campus ID</p>
+      </div>
+      <div style={{ padding: "0 24px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12, border: `1px solid ${t.border}`, background: t.card }}>
+          <span>👤</span><span style={{ fontSize: 13, color: t.sub }}>🎓 Student ID</span>
+        </div>
+        <div style={{ borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12, border: `1px solid ${t.border}`, background: t.card }}>
+          <span>🔒</span><span style={{ fontSize: 13, color: t.sub }}>Password</span>
+        </div>
+        <button style={{ marginTop: 12, background: "#1E3A2B", color: "#F6F2E9", borderRadius: 12, padding: "12px 0", fontSize: 13, fontWeight: 500, letterSpacing: 0.3 }}>Log in</button>
+      </div>
+    </div>
+  );
+}
+
+function connectivity(signal) {
+  if (signal >= -60) return { label: "🟢 Online", color: "#4C8C5B" };
+  if (signal >= -75) return { label: "🟡 Weak signal", color: "#F0A83C" };
+  return { label: "🔴 Offline", color: "#C0432E" };
+}
+
+function HomeScreen({ go, t, live, backend }) {
+  const charging = live.solar > 40 && live.battery < 100;
+  const conn = connectivity(live.signal);
+  const expectedGain = Math.round(clamp(live.solar / 6, 4, 20));
+  return (
+    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: t.paper }}>
+      <Header title="🌳 Tree-01" sub={`${conn.label} · simulated`} t={t} dotColor={conn.color}
+        right={
+          <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 10px", borderRadius: 999, fontSize: 10, fontWeight: 500, marginTop: 4, background: charging ? "#F0A83C1A" : t.sub + "1A", color: charging ? "#F0A83C" : t.sub }}>
+            <span className={charging ? "spin" : ""}>☀️</span>{charging ? "Charging" : "Idle"}
+          </div>
+        } />
+      <div style={{ padding: "0 24px", display: "flex", gap: 16, justifyContent: "center", marginBottom: 8 }}>
+        <RingGauge value={live.battery} label="🔋 Battery" color="#4C8C5B" t={t} charging={charging} />
+        <RingGauge value={live.solar} label="☀️ Solar" color="#F0A83C" t={t} />
+        <RingGauge value={live.aqi} label="🌬️ AQI" color="#3E7CB1" t={t} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <SimBadge t={t} label={backend && backend.connected
+          ? "SIMULATED TELEMETRY — via ComfortNet backend pipeline"
+          : "SIMULATED TELEMETRY — local fallback (backend not reachable)"} />
+      </div>
+
+      <Card t={t}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0" }}>
+          <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>☀️ Today's outlook</span>
+          <span style={{ fontSize: 11, color: t.sub }}>Sunny · {live.temp}°C</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, paddingBottom: 12 }}>
+          <div style={{ borderRadius: 10, padding: "8px 12px", background: t.sub + "14" }}>
+            <p style={{ fontSize: 10, color: t.sub, margin: 0 }}>Solar efficiency</p>
+            <p style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 600, color: t.ink, margin: "2px 0 0" }}>{Math.round(live.solar)}%</p>
+          </div>
+          <div style={{ borderRadius: 10, padding: "8px 12px", background: t.sub + "14" }}>
+            <p style={{ fontSize: 10, color: t.sub, margin: 0 }}>Expected gain today</p>
+            <p style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 600, color: "#4C8C5B", margin: "2px 0 0" }}>+{expectedGain}%</p>
+          </div>
+        </div>
+      </Card>
+
+      <div style={{ height: 12 }} />
+      <Card t={t}>
+        <Row emoji="📶" label="Signal strength" value={`${live.signal} dBm`} accent="#3E7CB1" t={t} />
+        <Row emoji="⬇️" label="Download" value={`${live.down} Mbps`} accent="#3E7CB1" t={t} trend={live.downTrend} />
+        <Row emoji="⬆️" label="Upload" value={`${live.up} Mbps`} accent="#3E7CB1" t={t} trend={live.upTrend} />
+        <Row emoji="⏱️" label="Latency" value={`${live.ping} ms`} accent="#3E7CB1" t={t} trend={live.pingTrend} />
+        <Row emoji="🌡️" label="Temperature" value={`${live.temp}°C`} accent="#C0432E" t={t} />
+        <Row emoji="🧑‍🎓" label="Users online" value={live.users} accent="#4C8C5B" t={t} />
+      </Card>
+
+      <div style={{ padding: "16px 24px 0" }}>
+        <button onClick={() => go("Scan")} style={{ width: "100%", background: "#F0A83C", color: "#1E3A2B", borderRadius: 12, padding: "14px 0", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+          🔳 🛜 Scan to connect
+        </button>
+      </div>
+      <div style={{ padding: "12px 24px 0", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <button onClick={() => go("Tree Detail")} style={{ borderRadius: 12, padding: "12px 0", fontSize: 12, border: `1px solid ${t.border}`, background: t.card, color: t.ink, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+          🌱 Sensor detail ›
+        </button>
+        <button onClick={() => go("Environment")} style={{ borderRadius: 12, padding: "12px 0", fontSize: 12, border: `1px solid ${t.border}`, background: t.card, color: t.ink, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+          🌦️ Environment ›
+        </button>
+      </div>
+      <div style={{ padding: "12px 24px 0" }}>
+        <button onClick={() => go("Emergency")} style={{ width: "100%", borderRadius: 12, padding: "12px 0", fontSize: 12, border: `1px solid ${t.border}`, background: "#C0432E1A", color: "#C0432E", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+          🚨 Emergency SOS ›
+        </button>
+      </div>
+      <div style={{ padding: "12px 24px 16px" }}>
+        <button onClick={() => go("Analytics")} style={{ width: "100%", borderRadius: 12, padding: "12px 0", fontSize: 12, border: `1px solid ${t.border}`, background: t.card, color: t.ink, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+          📊 View analytics dashboard ›
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TreeDetailScreen({ t, live, back, backend, ml }) {
+  const charging = live.solar > 40 && live.battery < 100;
+  const health = computeHealthScore(live);
+  const healthColor = health.status === "critical" ? "#C0432E" : health.status === "warning" ? "#F0A83C" : "#4C8C5B";
+  const healthEmoji = health.status === "critical" ? "🔴" : health.status === "warning" ? "🟡" : "🟢";
+  return (
+    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: t.paper }}>
+      <Header title="Sensor Detail" sub="Tree-01 · Simulated" t={t} onBack={back} />
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 4 }}>
+        <SimBadge t={t} label={backend && backend.connected
+          ? "SIMULATED — via backend pipeline"
+          : "SIMULATED — local fallback"} />
+      </div>
+      <div style={{ padding: "0 24px", display: "flex", gap: 16, justifyContent: "center", marginBottom: 4 }}>
+        <RingGauge value={health.score} label="Health" color={healthColor} t={t} />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", width: 96, height: 96 }}>
+          <span style={{ fontSize: 22 }}>🌱</span>
+          <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 600, marginTop: 4, color: t.ink }}>4.2 kg</span>
+          <span style={{ marginTop: 4, fontSize: 10, textTransform: "uppercase", textAlign: "center", color: t.sub }}>CO₂ / month<br />(estimated)</span>
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+        <div style={{ borderRadius: 12, padding: "6px 12px", fontSize: 11, background: healthColor + "1A", color: healthColor, display: "flex", alignItems: "center", gap: 6, maxWidth: 260, textAlign: "center" }}>
+          <span>{healthEmoji}</span><span>{health.factors.join(" · ")}</span>
+        </div>
+      </div>
+      <p style={{ padding: "0 24px 8px", fontSize: 10, textAlign: "center", color: t.sub }}>
+        Lightweight digital-twin status — simple rule-based score (not AI/ML, not field-validated). Same logic as the backend's /analytics/node health endpoint.
+      </p>
+      <Card t={t}>
+        <div style={{ padding: "12px 0 4px" }}>
+          <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>⚡ Power-priority load shedding</span>
+          <p style={{ fontSize: 9, color: t.sub, margin: "2px 0 8px" }}>Proposed logic (Phase 2 §9) — thresholds are illustrative, not experimentally validated.</p>
+        </div>
+        {[
+          { p: 1, label: "ESP32-S3 + essential sensing + SOS", shedBelow: -1 },
+          { p: 2, label: "Safety functions (PIR standby)", shedBelow: -1 },
+          { p: 3, label: "Camera / event processing", shedBelow: 25 },
+          { p: 4, label: "LED lighting", shedBelow: 40 },
+          { p: 5, label: "Wi-Fi AP service", shedBelow: 60 },
+        ].map((tier) => {
+          const active = tier.shedBelow === -1 || live.battery >= tier.shedBelow;
+          return (
+            <div key={tier.p} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: `1px solid ${t.border}` }}>
+              <span style={{ fontSize: 11, color: t.ink, opacity: active ? 1 : 0.5 }}>P{tier.p} · {tier.label}</span>
+              <span style={{ fontSize: 10, fontWeight: 600, color: active ? "#4C8C5B" : "#C0432E" }}>{active ? "ACTIVE" : "SHED"}</span>
+            </div>
+          );
+        })}
+      </Card>
+      <div style={{ height: 12 }} />
+      <Card t={t}>
+        <div style={{ padding: "12px 0 4px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🧠 Predictive Maintenance</span>
+          <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: "#3E7CB11A", color: "#3E7CB1" }}>ML PROTOTYPE — SYNTHETIC DATA</span>
+        </div>
+        {ml && ml.status === "ok" && ml.prediction ? (
+          <React.Fragment>
+            <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "8px 0" }}>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 600, color: ml.prediction.risk_level === "HIGH" ? "#C0432E" : ml.prediction.risk_level === "MEDIUM" ? "#F0A83C" : "#4C8C5B" }}>
+                  {Math.round(ml.prediction.risk_probability * 100)}%
+                </span>
+                <span style={{ fontSize: 9, color: t.sub, textTransform: "uppercase" }}>Risk</span>
+              </div>
+              <div style={{ flex: 1 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: ml.prediction.risk_level === "HIGH" ? "#C0432E" : ml.prediction.risk_level === "MEDIUM" ? "#F0A83C" : "#4C8C5B" }}>
+                  {ml.prediction.risk_level} maintenance risk
+                </span>
+                <p style={{ fontSize: 9, color: t.sub, margin: "2px 0 0" }}>
+                  Model: Random Forest · trained on synthetic telemetry · not field-validated
+                </p>
+              </div>
+            </div>
+            <p style={{ fontSize: 10, color: t.sub, margin: "4px 0" }}>Top contributing factors (feature importance — not causal):</p>
+            {ml.prediction.top_contributing_factors.map((f, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: i < 2 ? `1px solid ${t.border}` : "none" }}>
+                <span style={{ fontSize: 11, color: t.ink }}>{f.description}</span>
+                <span style={{ fontSize: 10, fontFamily: "monospace", color: t.sub }}>{(f.importance * 100).toFixed(1)}%</span>
+              </div>
+            ))}
+            <p style={{ fontSize: 9, color: t.sub, marginTop: 8 }}>
+              {ml.fetchedAt ? `Updated ${ml.fetchedAt.toLocaleTimeString()}` : ""} · Field validated: No · Production ready: No
+            </p>
+          </React.Fragment>
+        ) : (
+          <p style={{ fontSize: 11, color: t.sub, padding: "8px 0" }}>
+            {backend && backend.connected ? "ML unavailable — model not loaded on backend" : "ML unavailable — backend not reachable"}
+          </p>
+        )}
+      </Card>
+      <div style={{ height: 12 }} />
+      <Card t={t}>
+        <Row emoji="🔋" label="Battery" value={`${Math.round(live.battery)}%${charging ? " · rising" : ""}`} accent="#4C8C5B" t={t} trend={live.battTrend} charging={charging} />
+        <Row emoji="☀️" label="Solar power" value={live.solar > 40 ? "Charging" : "Low light"} accent="#F0A83C" t={t} trend={live.solarTrend} charging={charging} />
+        <Row emoji="🌡️" label="Temperature" value={`${live.temp}°C`} accent="#C0432E" t={t} trend={live.tempTrend} />
+        <Row emoji="💧" label="Soil moisture" value="42%" accent="#3E7CB1" t={t} note="Sampled hourly" />
+        <Row emoji="🍃" label="LED status" value="On · Dusk mode" accent="#1E3A2B" t={t} />
+      </Card>
+      <div style={{ margin: "12px 24px 0", borderRadius: 16, overflow: "hidden", border: `1px solid ${t.border}` }}>
+        <div style={{ height: 112, background: "linear-gradient(135deg,#1E3A2B,#0E1F17)", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+          <span style={{ fontSize: 22 }}>📷</span>
+          <span style={{ position: "absolute", top: 8, left: 8, fontSize: 9, background: "rgba(0,0,0,.4)", color: "#fff", padding: "2px 8px", borderRadius: 999 }}>PROTOTYPE FEED — SIMULATED</span>
+          <span style={{ position: "absolute", bottom: 8, right: 8, fontSize: 9, color: "rgba(255,255,255,.7)" }}>Tree-01 · not a live camera</span>
+        </div>
+      </div>
+      <p style={{ padding: "12px 24px 16px", fontSize: 11, lineHeight: 1.5, color: t.sub }}>
+        Battery, solar, and temperature above update every few seconds to simulate a live sensor feed. Soil moisture and CO₂ are static placeholders pending real hardware calibration.
+      </p>
+    </div>
+  );
+}
+
+function MapScreen({ t }) {
+  const [selected, setSelected] = useState(null);
+  const trees = [
+    { id: "Tree-01", x: 120, y: 160, status: "online", battery: 92, distance: 40 },
+    { id: "Tree-02", x: 200, y: 90, status: "online", battery: 78, distance: 90 },
+    { id: "Tree-03", x: 80, y: 260, status: "charging", battery: 55, distance: 130 },
+    { id: "Tree-04", x: 220, y: 300, status: "online", battery: 84, distance: 210 },
+    { id: "Tree-05", x: 160, y: 380, status: "offline", battery: 18, distance: 260 },
+  ];
+  const color = (s) => (s === "online" ? "#4C8C5B" : s === "charging" ? "#F0A83C" : "#9A9A9A");
+  const sel = trees.find((tr) => tr.id === selected);
+  const findNearest = () => {
+    const av = trees.filter((tr) => tr.status !== "offline").sort((a, b) => a.distance - b.distance);
+    if (av[0]) setSelected(av[0].id);
+  };
+  return (
+    <div style={{ height: "100%", width: "100%", background: t.paper, display: "flex", flexDirection: "column" }}>
+      <Header title="🗺️ Campus Map" sub="5 nodes 🌳 · tap a pin" t={t} />
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <SimBadge t={t} label="Illustrative demo node positions — not surveyed sites" />
+      </div>
+      <div style={{ padding: "0 24px 12px" }}>
+        <button onClick={findNearest} style={{ width: "100%", borderRadius: 12, padding: "10px 0", fontSize: 12, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${t.border}`, background: "#3E7CB114", color: "#3E7CB1" }}>
+          📍 Find nearest available tree
+        </button>
+      </div>
+      <div style={{ margin: "0 24px", borderRadius: 16, overflow: "hidden", position: "relative", border: `1px solid ${t.border}`, background: t.card, height: 260 }}>
+        <svg width="100%" height="100%" viewBox="0 0 300 420">
+          <rect x="20" y="20" width="260" height="380" rx="18" fill={t.paper} />
+          <path d="M20 140 H280 M20 260 H280 M120 20 V400" stroke={t.border} strokeWidth="2" />
+          {trees.map((tr) => (
+            <g key={tr.id} onClick={() => setSelected(tr.id)} style={{ cursor: "pointer" }}>
+              <circle cx={tr.x} cy={tr.y} r="20" fill="transparent" />
+              {selected === tr.id && (
+                <React.Fragment>
+                  <circle cx={tr.x} cy={tr.y} r="10" fill="none" stroke={color(tr.status)} strokeWidth="2">
+                    <animate attributeName="r" values="10;28" dur="1.6s" repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.6;0" dur="1.6s" repeatCount="indefinite" />
+                  </circle>
+                  <circle cx={tr.x} cy={tr.y} r="16" fill={color(tr.status)} opacity="0.22" />
+                </React.Fragment>
+              )}
+              <circle cx={tr.x} cy={tr.y} r="10" fill={color(tr.status)} opacity="0.9" stroke={selected === tr.id ? t.ink : "none"} strokeWidth="2">
+                {selected === tr.id && <animate attributeName="r" values="10;12;10" dur="1.6s" repeatCount="indefinite" />}
+              </circle>
+              <text x={tr.x} y={tr.y - 18} fontSize="11" textAnchor="middle">🌳</text>
+              <text x={tr.x} y={tr.y + 24} fontSize="9" textAnchor="middle" fill={t.ink}>{tr.id}</text>
+            </g>
+          ))}
+        </svg>
+      </div>
+      <div style={{ padding: "12px 24px 0", display: "flex", gap: 16, fontSize: 11, color: t.sub }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#4C8C5B" }} />Online</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#F0A83C" }} />Charging</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#9A9A9A" }} />Offline</span>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        {sel ? (
+          <Card t={t}>
+            <Row emoji="📍" label={sel.id} value={sel.status} accent={color(sel.status)} t={t} />
+            <Row emoji="🔋" label="Battery" value={`${sel.battery}%`} accent="#4C8C5B" t={t} />
+            <Row emoji="🚶" label="Walk from here" value={`${sel.distance} m →`} accent="#3E7CB1" t={t} />
+          </Card>
+        ) : (
+          <p style={{ padding: "0 24px", fontSize: 11, color: t.sub }}>Tap any pin to see that node's status.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScanScreen({ t, back }) {
+  const [stage, setStage] = useState("scanning");
+  useEffect(() => {
+    setStage("scanning");
+    const t1 = setTimeout(() => setStage("detected"), 1400);
+    const t2 = setTimeout(() => setStage("connecting"), 2400);
+    const t3 = setTimeout(() => setStage("connected"), 3600);
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+  }, []);
+  const label = { scanning: "Scanning…", detected: "QR code detected", connecting: "Connecting to Tree-01…", connected: "Connected to Tree-01" }[stage];
+  return (
+    <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 40, background: t.paper }}>
+      <div style={{ width: "100%", padding: "0 24px" }}>
+        <button onClick={back} style={{ background: "none", display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: t.sub }}>‹ Back</button>
+      </div>
+      <span style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", marginTop: 16, marginBottom: 24, color: t.sub }}>Scan to connect</span>
+      <div style={{ width: 192, height: 192, borderRadius: 16, border: "2px dashed #F0A83C", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+        <span style={{ fontSize: 44, opacity: stage === "connected" ? 1 : 0.3 }} className={stage === "scanning" ? "pulse" : ""}>{stage === "connected" ? "✅" : "🔳"}</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 24 }}>
+        {stage !== "connected" && <span className="spin-fast">⏳</span>}
+        <p style={{ fontSize: 12, textAlign: "center", color: stage === "connected" ? "#4C8C5B" : t.sub }}>{label}</p>
+      </div>
+    </div>
+  );
+}
+
+function AlertsScreen({ t }) {
+  const items = [
+    { emoji: "🔋", title: "Low battery", body: "Tree-05 dropped to 18% — charging paused overnight", time: "2m ago", accent: "#C0432E" },
+    { emoji: "🚨", title: "Emergency alert", body: "SOS triggered near Tree-03, security notified", time: "1h ago", accent: "#C0432E" },
+    { emoji: "🛜", title: "Plan renewal", body: "Your Student Plus plan renews in 3 days", time: "5h ago", accent: "#3E7CB1" },
+    { emoji: "🌳", title: "Health check", body: "Tree-02 health score improved to 91", time: "1d ago", accent: "#4C8C5B" },
+    { emoji: "📅", title: "Recharge reminder", body: "Your Student Plus plan expires in 18 days — recharge from Plans", time: "1d ago", accent: "#F0A83C" },
+  ];
+  return (
+    <div style={{ height: "100%", width: "100%", background: t.paper }}>
+      <Header title="🔔 Alerts" sub="Push notifications" t={t} />
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <SimBadge t={t} label="Illustrative examples — not live notifications" />
+      </div>
+      <div style={{ padding: "0 24px", display: "flex", flexDirection: "column", gap: 8 }}>
+        {items.map((it, i) => (
+          <div key={i} style={{ borderRadius: 12, border: `1px solid ${t.border}`, padding: 12, display: "flex", gap: 12, background: t.card }}>
+            <div style={{ width: 32, height: 32, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, background: it.accent + "1A" }}>{it.emoji}</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 13, fontWeight: 500, color: t.ink }}>{it.title}</span>
+                <span style={{ fontSize: 10, color: t.sub }}>{it.time}</span>
+              </div>
+              <p style={{ fontSize: 11, marginTop: 2, color: t.sub }}>{it.body}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const TREE_FACTS = {
+  "Tree-02": "online, 78% solar charge, 90 m from the library, no queue right now",
+  "Tree-03": "charging, 55% battery, 130 m away near the science block",
+  "Tree-04": "online, 84% battery, 210 m from the sports ground",
+  "Tree-05": "offline, 18% battery, 260 m away — flagged for maintenance",
+};
+function mentionedTree(text) {
+  const m = text.match(/tree[-\s]?0?([1-5])/i);
+  return m ? `Tree-0${m[1]}` : null;
+}
+function reply(text, lastTree, live) {
+  const q = text.toLowerCase();
+  const named = mentionedTree(text);
+  const usesPronoun = /\bit\b|\bthat one\b|\bthere\b/.test(q);
+  const tree = named || (usesPronoun ? lastTree : null);
+  const asksStatus = q.includes("batter") || q.includes("charg") || q.includes("status") || usesPronoun;
+
+  if (tree === "Tree-01" && asksStatus) {
+    if (q.includes("charg") && !q.includes("batter")) {
+      const isCharging = live.solar > 40 && live.battery < 100;
+      return { text: `Yes — Tree-01 is currently ${isCharging ? "charging" : "not charging (solar is low right now)"}, at ${Math.round(live.battery)}% battery.`, tree };
+    }
+    return { text: `Tree-01 is online at ${Math.round(live.battery)}% battery, ${live.solar > 40 ? "charging" : "on low solar"}, signal ${live.signal} dBm.`, tree };
+  }
+  if (tree && tree !== "Tree-01" && asksStatus) {
+    return { text: `${tree} is ${TREE_FACTS[tree] || "not in range right now"}.`, tree };
+  }
+  if (q.includes("charge") || q.includes("tree") || q.includes("library")) {
+    return { text: "Tree-02 is closest to the library — online, 78% solar charge, no queue right now.", tree: "Tree-02" };
+  }
+  if (q.includes("secur") || q.includes("safe") || q.includes("emergency") || q.includes("sos")) {
+    return { text: "Campus Security can be reached instantly from the Emergency tab — the SOS button shares your nearest tree node's location automatically.", tree: lastTree };
+  }
+  if (q.includes("wifi") || q.includes("connect") || q.includes("password")) {
+    return { text: "Scan the QR code on any tree node from Home → Scan to connect — no password needed for the free tier.", tree: lastTree };
+  }
+  if (q.includes("recharge") || q.includes("renew") || q.includes("expir")) {
+    return { text: "Your Student Plus plan renews in 18 days at ₹59/month. You can recharge early from the Plans tab.", tree: lastTree };
+  }
+  if (q.includes("plan") || q.includes("data") || q.includes("price") || q.includes("cost") || q.includes("subscri")) {
+    return { text: "You're on Student Plus (₹59/month, unlimited data). Guest, Student Basic (₹29), Student Pro (₹99), and a ₹10/day Event Pass are also available on the Plans tab.", tree: lastTree };
+  }
+  if (q.includes("eco") || q.includes("point") || q.includes("reward") || q.includes("carbon")) {
+    return { text: "You've earned 1,240 eco points from using tree Wi-Fi and charging — 3 rewards are ready to redeem on your Profile.", tree: lastTree };
+  }
+  if (q.includes("map") || q.includes("where") || q.includes("location") || q.includes("nearest")) {
+    return { text: 'You can see every tree node on the Map tab — tap a pin for its status, or use "Find nearest" to jump straight to the closest available node. Map data is illustrative in this prototype.', tree: lastTree };
+  }
+  return { text: "I can help with tree status, charging, Wi-Fi, plans, eco points, or campus safety — try asking about one of those.", tree: lastTree };
+}
+
+function AssistantScreen({ t, live }) {
+  const [messages, setMessages] = useState([{ from: "bot", text: "Hi! 👋 I'm the ComfortNet Campus Assistant 🌳. I use simple keyword matching, not AI — ask me about tree locations, charging, or campus safety." }]);
+  const [input, setInput] = useState("");
+  const [typing, setTyping] = useState(false);
+  const [lastTree, setLastTree] = useState(null);
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current && endRef.current.scrollIntoView({ behavior: "smooth" }); }, [messages, typing]);
+  const send = () => {
+    const text = input.trim();
+    if (!text) return;
+    setMessages((m) => [...m, { from: "user", text }]);
+    setInput("");
+    setTyping(true);
+    setTimeout(() => {
+      const r = reply(text, lastTree, live);
+      setMessages((m) => [...m, { from: "bot", text: r.text }]);
+      if (r.tree) setLastTree(r.tree);
+      setTyping(false);
+    }, 700);
+  };
+  return (
+    <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", background: t.paper }}>
+      <Header title="💬 Campus Assistant" sub="Ask a follow-up — it remembers the last tree" t={t} />
+      <div style={{ padding: "0 24px", flex: 1, display: "flex", flexDirection: "column", gap: 8, overflowY: "auto" }}>
+        {messages.map((m, i) => (
+          <div key={i} style={{
+            maxWidth: "80%", borderRadius: 16, padding: "8px 12px", fontSize: 12,
+            alignSelf: m.from === "bot" ? "flex-start" : "flex-end",
+            background: m.from === "bot" ? t.card : "#1E3A2B",
+            color: m.from === "bot" ? t.ink : "#F6F2E9",
+            border: m.from === "bot" ? `1px solid ${t.border}` : "none",
+          }}>{m.text}</div>
+        ))}
+        {typing && (
+          <div style={{ alignSelf: "flex-start", borderRadius: 16, padding: "8px 12px", fontSize: 12, background: t.card, color: t.sub, border: `1px solid ${t.border}` }}>
+            <span className="spin-fast" style={{ marginRight: 6 }}>⏳</span>typing…
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+      <div style={{ padding: "16px 24px", display: "flex", alignItems: "center", gap: 8 }}>
+        <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Ask about a tree, plan, or safety…"
+          style={{ flex: 1, borderRadius: 999, border: `1px solid ${t.border}`, padding: "10px 16px", fontSize: 12, outline: "none", color: t.ink, background: t.card }} />
+        <button onClick={send} style={{ width: 40, height: 40, borderRadius: 999, background: "#F0A83C", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>➤</button>
+      </div>
+    </div>
+  );
+}
+
+function EmergencyScreen({ t, back }) {
+  const [phase, setPhase] = useState("idle");
+  const [count, setCount] = useState(5);
+  useEffect(() => {
+    if (phase !== "counting") return;
+    if (count === 0) { setPhase("sending"); return; }
+    const id = setTimeout(() => setCount((c) => c - 1), 1000);
+    return () => clearTimeout(id);
+  }, [phase, count]);
+  useEffect(() => {
+    if (phase !== "sending") return;
+    const id = setTimeout(() => setPhase("sent"), 1100);
+    return () => clearTimeout(id);
+  }, [phase]);
+  const start = () => { setCount(5); setPhase("counting"); };
+  const cancel = () => { setPhase("idle"); setCount(5); };
+  const r = 60, c = 2 * Math.PI * r;
+  const countProgress = phase === "counting" ? c - (count / 5) * c : 0;
+  return (
+    <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", alignItems: "center", paddingTop: 32, background: t.paper }}>
+      <div style={{ width: "100%", padding: "0 24px" }}>
+        <button onClick={back} style={{ background: "none", display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: t.sub }}>‹ Back</button>
+      </div>
+      <span style={{ fontSize: 10, letterSpacing: 1.5, textTransform: "uppercase", marginTop: 12, marginBottom: 24, color: t.sub }}>Emergency</span>
+      <div style={{ position: "relative", width: 144, height: 144, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {phase === "counting" && (
+          <svg width="144" height="144" viewBox="0 0 144 144" style={{ position: "absolute", transform: "rotate(-90deg)" }}>
+            <circle cx="72" cy="72" r={r} stroke={t.border} strokeWidth="5" fill="none" />
+            <circle cx="72" cy="72" r={r} stroke="#C0432E" strokeWidth="5" fill="none" strokeDasharray={c} strokeDashoffset={countProgress} strokeLinecap="round" style={{ transition: "stroke-dashoffset 1s linear" }} />
+          </svg>
+        )}
+        <button onClick={phase === "idle" ? start : phase === "counting" ? cancel : undefined}
+          style={{ width: 128, height: 128, borderRadius: 999, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 14px rgba(0,0,0,.2)", background: phase === "sent" ? "#8a3226" : "#C0432E" }}>
+          {phase === "counting" ? (
+            <span style={{ color: "#F6F2E9", fontFamily: "monospace", fontSize: 28, fontWeight: 600 }}>{count}</span>
+          ) : (<span style={{ fontSize: 28 }}>🛡️</span>)}
+          <span style={{ color: "#F6F2E9", fontWeight: 600, marginTop: 4, fontSize: 12, letterSpacing: 0.3 }}>
+            {phase === "idle" ? "SOS" : phase === "counting" ? "TAP TO CANCEL" : phase === "sending" ? "SENDING" : "SENT"}
+          </span>
+        </button>
+      </div>
+      <p style={{ fontSize: 11, marginTop: 20, textAlign: "center", padding: "0 40px", color: t.sub }}>
+        {phase === "idle" && "Tap to start a 5 second SOS alert — you can still cancel it"}
+        {phase === "counting" && "Sending in a few seconds — tap the button to cancel"}
+        {phase === "sending" && "Sending your location…"}
+        {phase === "sent" && "Help is on the way."}
+      </p>
+      {phase === "sent" && (
+        <Card t={t}>
+          <Row emoji="✅" label="Alert sent" value="✓" accent="#4C8C5B" t={t} />
+          <Row emoji="🛡️" label="Security notified" value="✓" accent="#4C8C5B" t={t} />
+          <Row emoji="📍" label="Tree ID" value="Tree-01" accent="#3E7CB1" t={t} />
+          <Row emoji="📍" label="GPS coordinates" value="12.9716°N, 77.5946°E" accent="#3E7CB1" t={t} note="Simulated" />
+          <Row emoji="⏱️" label="Est. response time" value="4 min" accent="#F0A83C" t={t} />
+        </Card>
+      )}
+      <div style={{ height: 12 }} />
+      <Card t={t}><Row emoji="📞" label="Campus Security" value="Call" accent="#C0432E" t={t} /></Card>
+    </div>
+  );
+}
+
+function SettingsScreen({ t, dark, setDark, back, go }) {
+  const [notif, setNotif] = useState(true);
+  const [lang, setLang] = useState("English");
+  const Toggle = ({ on, onClick }) => (
+    <button onClick={onClick} style={{ width: 40, height: 24, borderRadius: 999, display: "flex", alignItems: "center", padding: 2, background: on ? "#4C8C5B" : t.border }}>
+      <div style={{ width: 20, height: 20, borderRadius: 999, background: "#fff", transition: "transform .2s", transform: on ? "translateX(16px)" : "translateX(0)" }} />
+    </button>
+  );
+  return (
+    <div style={{ height: "100%", width: "100%", background: t.paper }}>
+      <Header title="⚙️ Settings" sub="App preferences" t={t} onBack={back} />
+      <Card t={t}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span>🎨</span><span style={{ fontSize: 13, color: t.ink }}>Dark mode</span></div>
+          <Toggle on={dark} onClick={() => setDark(!dark)} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span>🔔</span><span style={{ fontSize: 13, color: t.ink }}>Notifications</span></div>
+          <Toggle on={notif} onClick={() => setNotif(!notif)} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${t.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span>🌐</span><span style={{ fontSize: 13, color: t.ink }}>Language</span></div>
+          <button onClick={() => setLang(lang === "English" ? "Hindi" : "English")} style={{ background: "none", fontSize: 12, fontFamily: "monospace", color: t.sub }}>{lang}</button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span>👤</span><span style={{ fontSize: 13, color: t.ink }}>Account</span></div>
+          <span style={{ color: t.sub }}>›</span>
+        </div>
+      </Card>
+      <div style={{ height: 12 }} />
+      <button onClick={() => go("Admin")} style={{ margin: "0 24px", width: "calc(100% - 48px)", borderRadius: 12, border: `1px solid ${t.border}`, padding: "12px 0", fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: t.card, color: t.ink }}>
+        🛠️ Admin dashboard ›
+      </button>
+    </div>
+  );
+}
+
+function AdminScreen({ t, back, backend, ml }) {
+  const [scenario, setScenario] = useState("normal");
+  const [scenarioBusy, setScenarioBusy] = useState(false);
+  const scenarios = [
+    { key: "normal", label: "Normal", emoji: "🟢" },
+    { key: "low_battery", label: "Low Battery", emoji: "🔋" },
+    { key: "sensor_anomaly", label: "Sensor Anomaly", emoji: "🌡️" },
+    { key: "network_failure", label: "Network Failure", emoji: "📡" },
+    { key: "sos_event", label: "SOS Event", emoji: "🚨" },
+    { key: "recovery", label: "Recovery", emoji: "🔁" },
+  ];
+  const triggerScenario = async (key) => {
+    setScenarioBusy(true);
+    const res = await postDemoScenario(key);
+    if (res) setScenario(key);
+    setScenarioBusy(false);
+  };
+  const stats = [
+    { emoji: "🌳", label: "Total trees", value: "5", accent: "#4C8C5B" },
+    { emoji: "👥", label: "Active users", value: "142", accent: "#3E7CB1" },
+    { emoji: "☀️", label: "Solar generation", value: "3.1 kWh", accent: "#F0A83C" },
+    { emoji: "🌱", label: "Carbon saved", value: "21 kg", accent: "#4C8C5B" },
+    { emoji: "🔔", label: "Open alerts", value: "2", accent: "#C0432E" },
+    { emoji: "🔋", label: "Avg battery health", value: "87%", accent: "#4C8C5B" },
+    { emoji: "🧠", label: "Network uptime", value: "99.2%", accent: "#3E7CB1" },
+  ];
+  return (
+    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: t.paper }}>
+      <Header title="🛠️ Admin Dashboard" sub="Campus overview" t={t} onBack={back} />
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <SimBadge t={t} label="SIMULATED DATA — no deployed nodes yet" />
+      </div>
+      <div style={{ margin: "0 24px 12px", padding: "8px 12px", borderRadius: 10, fontSize: 10, display: "flex", alignItems: "center", gap: 6, background: (backend && backend.connected ? "#4C8C5B1A" : "#9A9A9A1A"), color: (backend && backend.connected ? "#4C8C5B" : t.sub) }}>
+        <span>{backend && backend.connected ? "🟢" : "⚪"}</span>
+        <span>{backend && backend.connected ? "Backend pipeline connected — demo controls active" : "Backend not reachable — demo controls disabled (run comfortnet-backend locally)"}</span>
+      </div>
+      {backend && backend.connected && (
+        <div style={{ margin: "0 24px 16px" }}>
+          <p style={{ fontSize: 11, textTransform: "uppercase", color: t.sub, margin: "0 0 8px" }}>🎬 Demo scenario control</p>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {scenarios.map((s) => (
+              <button key={s.key} disabled={scenarioBusy} onClick={() => triggerScenario(s.key)}
+                style={{ borderRadius: 10, padding: "10px 0", fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  border: `1px solid ${scenario === s.key ? "#F0A83C" : t.border}`,
+                  background: scenario === s.key ? "#F0A83C1A" : t.card,
+                  color: scenario === s.key ? "#F0A83C" : t.ink }}>
+                {s.emoji} {s.label}
+              </button>
+            ))}
+          </div>
+          <p style={{ fontSize: 9, color: t.sub, marginTop: 6 }}>Affects the running simulator only — no physical hardware exists to control.</p>
+        </div>
+      )}
+      <div style={{ margin: "0 24px 16px" }}>
+        <div style={{ borderRadius: 12, border: `1px solid ${t.border}`, padding: 12, background: t.card }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🧠 Predictive Maintenance ML</span>
+            <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 8px", borderRadius: 999, background: "#3E7CB11A", color: "#3E7CB1" }}>PROTOTYPE</span>
+          </div>
+          {ml && ml.status === "ok" && ml.prediction ? (
+            <React.Fragment>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 10, color: t.sub }}>
+                <span>Model: <b style={{ color: t.ink }}>Random Forest</b></span>
+                <span>Training data: <b style={{ color: t.ink }}>Synthetic</b></span>
+                <span>Field validation: <b style={{ color: "#C0432E" }}>Not performed</b></span>
+                <span>Current risk: <b style={{ color: ml.prediction.risk_level === "HIGH" ? "#C0432E" : ml.prediction.risk_level === "MEDIUM" ? "#F0A83C" : "#4C8C5B" }}>{ml.prediction.risk_level}</b></span>
+              </div>
+              <p style={{ fontSize: 9, color: t.sub, marginTop: 8 }}>Test-set metrics (from an actual executed train/test run on synthetic data — see ml/artifacts/evaluation_metrics.json): accuracy 0.81 · recall 0.75 · ROC-AUC 0.84. Not real-world/field accuracy.</p>
+            </React.Fragment>
+          ) : (
+            <p style={{ fontSize: 11, color: t.sub }}>
+              {backend && backend.connected ? "ML status unavailable from backend" : "Backend not reachable — connect to see ML status"}
+            </p>
+          )}
+        </div>
+      </div>
+      <div style={{ padding: "0 24px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {stats.map((s, i) => (
+          <div key={i} style={{ borderRadius: 12, border: `1px solid ${t.border}`, padding: 12, display: "flex", flexDirection: "column", gap: 4, background: t.card }}>
+            <div style={{ width: 28, height: 28, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", background: s.accent + "1A" }}>{s.emoji}</div>
+            <span style={{ fontSize: 15, fontFamily: "monospace", fontWeight: 600, marginTop: 4, color: t.ink }}>{s.value}</span>
+            <span style={{ fontSize: 10, color: t.sub }}>{s.label}</span>
+          </div>
+        ))}
+      </div>
+      <p style={{ padding: "0 24px 16px", fontSize: 11, lineHeight: 1.5, display: "flex", alignItems: "center", gap: 4, color: t.sub }}>
+        📈 For campus administrators managing a ComfortNet deployment — all figures above (including carbon saved) are simulated placeholders for this prototype, not measured data from deployed hardware.
+      </p>
+    </div>
+  );
+}
+
+function ProfileScreen({ t, go }) {
+  return (
+    <div style={{ height: "100%", width: "100%", background: t.paper }}>
+      <Header title="🧑‍🎓 Your Account" sub="Profile" t={t}
+        right={<button onClick={() => go("Settings")} style={{ width: 36, height: 36, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", border: `1px solid ${t.border}`, background: t.card }}>⚙️</button>} />
+      <Card t={t}>
+        <Row emoji="🎓" label="Current plan" value="Student Plus" accent="#1E3A2B" t={t} />
+        <Row emoji="🛜" label="Remaining data" value="3.2 GB" accent="#3E7CB1" t={t} />
+        <Row emoji="🔋" label="Charges this month" value="14" accent="#4C8C5B" t={t} />
+      </Card>
+      <div style={{ height: 12 }} />
+      <button onClick={() => go("Plans")} style={{ margin: "0 24px", width: "calc(100% - 48px)", borderRadius: 12, border: `1px solid ${t.border}`, padding: "12px 0", fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: t.card, color: t.ink }}>
+        ⚡ Recharge plans ›
+      </button>
+      <div style={{ height: 12 }} />
+      <Card t={t}>
+        <Row emoji="🏆" label="Eco points" value="1,240 pts" accent="#4C8C5B" t={t} />
+        <Row emoji="🎁" label="Rewards available" value="3" accent="#F0A83C" t={t} />
+      </Card>
+      <p style={{ padding: "8px 24px 0", fontSize: 10, lineHeight: 1.5, color: t.sub }}>
+        Prototype placeholder values — no carbon-accounting methodology is implemented yet.
+      </p>
+      <button style={{ margin: "24px 24px 16px", width: "calc(100% - 48px)", border: "1px solid #C0432E", color: "#C0432E", borderRadius: 12, padding: "12px 0", fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: "none" }}>
+        🚪 Log out
+      </button>
+    </div>
+  );
+}
+
+const PLANS = [
+  { key: "guest", emoji: "🌱", name: "Guest", price: "Free", period: "", perks: ["100 MB/day", "30 Mbps", "30 min sessions", "Ad-supported"] },
+  { key: "basic", emoji: "🎓", name: "Student Basic", price: "₹29", period: "/month", perks: ["3 GB/day", "50 Mbps", "Campus only", "Tree Wi-Fi"] },
+  { key: "plus", emoji: "⭐", name: "Student Plus", price: "₹59", period: "/month", perks: ["Unlimited data", "75 Mbps", "Priority speed", "Emergency SOS", "Tree navigation"], recommended: true },
+  { key: "pro", emoji: "🚀", name: "Student Pro", price: "₹99", period: "/month", perks: ["Unlimited data", "100 Mbps", "Highest priority", "Campus Assistant", "Device sync", "Premium support"] },
+  { key: "event", emoji: "🎉", name: "Event Pass", price: "₹10", period: "/day", perks: ["Great for visitors", "Full campus access", "No sign-up needed"] },
+];
+const usageHistory = [{ m: "Feb", gb: 18 }, { m: "Mar", gb: 22 }, { m: "Apr", gb: 19 }, { m: "May", gb: 26 }, { m: "Jun", gb: 24 }, { m: "Jul", gb: 21 }];
+
+function RechargeScreen({ t }) {
+  const [current, setCurrent] = useState("plus");
+  const [payment, setPayment] = useState("upi");
+  const payments = [{ key: "upi", label: "UPI", emoji: "📱" }, { key: "card", label: "Card", emoji: "💳" }, { key: "netbanking", label: "Net Banking", emoji: "👛" }, { key: "wallet", label: "College Wallet", emoji: "👛" }];
+  const maxGb = Math.max(...usageHistory.map((u) => u.gb));
+  return (
+    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: t.paper }}>
+      <Header title="💳 Plans" sub="Access tiers (illustrative)" t={t} />
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <SimBadge t={t} label="Prototype concept — not a live billing system" />
+      </div>
+      <p style={{ padding: "0 24px 12px", fontSize: 11, lineHeight: 1.5, color: t.sub }}>
+        ComfortNet's business model is B2B: the deploying institution is the customer, and access tiers shown here would be configured by that institution for its students, not sold directly by ComfortNet. This screen illustrates the student-facing experience only.
+      </p>
+      <Card t={t}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0" }}>
+          <div><p style={{ fontSize: 11, margin: 0, color: t.sub }}>Current plan</p><p style={{ fontSize: 15, fontWeight: 600, margin: "2px 0 0", color: t.ink }}>⭐ Student Plus</p></div>
+          <div style={{ textAlign: "right" }}><p style={{ fontSize: 11, margin: 0, color: t.sub }}>Expires in</p><p style={{ fontSize: 15, fontFamily: "monospace", fontWeight: 600, margin: "2px 0 0", color: "#F0A83C" }}>18 days</p></div>
+        </div>
+        <button style={{ width: "100%", background: "#F0A83C", color: "#1E3A2B", borderRadius: 12, padding: "10px 0", fontSize: 12, fontWeight: 600, marginBottom: 12 }}>🔁 Recharge now</button>
+      </Card>
+      <p style={{ padding: "16px 24px 4px", fontSize: 11, textTransform: "uppercase", color: t.sub }}>Choose a plan</p>
+      <div style={{ padding: "0 24px", display: "flex", flexDirection: "column", gap: 8 }}>
+        {PLANS.map((p) => (
+          <div key={p.key} style={{ borderRadius: 16, padding: 12, position: "relative", background: t.card, border: `${p.recommended ? 2 : 1}px solid ${p.recommended ? "#F0A83C" : t.border}` }}>
+            {p.recommended && <span style={{ position: "absolute", top: -10, right: 12, fontSize: 9, background: "#F0A83C", color: "#1E3A2B", padding: "2px 8px", borderRadius: 999, fontWeight: 600 }}>RECOMMENDED</span>}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 16 }}>{p.emoji}</span><span style={{ fontSize: 13, fontWeight: 600, color: t.ink }}>{p.name}</span></div>
+              <span style={{ fontSize: 13, fontFamily: "monospace", fontWeight: 600, color: t.ink }}>{p.price}<span style={{ fontSize: 10, fontWeight: 400, color: t.sub }}>{p.period}</span></span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, margin: "8px 0" }}>
+              {p.perks.map((perk, i) => <span key={i} style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: t.sub + "14", color: t.sub }}>{perk}</span>)}
+            </div>
+            <button onClick={() => setCurrent(p.key)} disabled={current === p.key} style={{ width: "100%", borderRadius: 10, padding: "8px 0", fontSize: 12, fontWeight: 500, background: current === p.key ? "#4C8C5B1A" : "#1E3A2B", color: current === p.key ? "#4C8C5B" : "#F6F2E9" }}>
+              {current === p.key ? "✓ Current plan" : p.price === "Free" ? "Select" : "Upgrade"}
+            </button>
+          </div>
+        ))}
+      </div>
+      <p style={{ padding: "20px 24px 4px", fontSize: 11, textTransform: "uppercase", color: t.sub }}>Payment method</p>
+      <div style={{ padding: "0 24px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {payments.map((pm) => (
+          <button key={pm.key} onClick={() => setPayment(pm.key)} style={{ borderRadius: 12, padding: "10px 0", fontSize: 11, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `1px solid ${payment === pm.key ? "#F0A83C" : t.border}`, background: payment === pm.key ? "#F0A83C1A" : t.card, color: payment === pm.key ? "#F0A83C" : t.ink }}>
+            {pm.emoji} {pm.label}
+          </button>
+        ))}
+      </div>
+      <p style={{ padding: "20px 24px 4px", fontSize: 11, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 4, color: t.sub }}>📊 Monthly usage (GB)</p>
+      <div style={{ margin: "0 24px", borderRadius: 16, padding: 12, border: `1px solid ${t.border}`, background: t.card, height: 120, display: "flex", alignItems: "flex-end", gap: 8 }}>
+        {usageHistory.map((u, i) => (
+          <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <div style={{ width: "100%", borderRadius: "4px 4px 0 0", background: "#4C8C5B", height: `${(u.gb / maxGb) * 80}px` }} />
+            <span style={{ fontSize: 9, color: t.sub }}>{u.m}</span>
+          </div>
+        ))}
+      </div>
+      <p style={{ padding: "16px 24px 24px", fontSize: 10, lineHeight: 1.5, color: t.sub }}>
+        Prices and usage figures are illustrative for this prototype — payment methods are not wired to a real gateway.
+      </p>
+    </div>
+  );
+}
+
+function EnvironmentScreen({ t, live, back }) {
+  const lightLabel = live.light > 600 ? "Bright" : live.light > 250 ? "Moderate" : "Low";
+  return (
+    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: t.paper }}>
+      <Header title="🌦️ Environment" sub="Ambient sensors · simulated" t={t} onBack={back} />
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <SimBadge t={t} />
+      </div>
+      <div style={{ padding: "0 24px 12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        <div style={{ borderRadius: 12, border: `1px solid ${t.border}`, padding: 12, background: t.card }}>
+          <span style={{ fontSize: 13 }}>🌬️</span>
+          <p style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 600, margin: "4px 0 0", color: t.ink }}>{Math.round(live.aqi)}</p>
+          <p style={{ fontSize: 10, margin: 0, color: t.sub }}>AQI</p>
+        </div>
+        <div style={{ borderRadius: 12, border: `1px solid ${t.border}`, padding: 12, background: t.card }}>
+          <span style={{ fontSize: 13 }}>☀️</span>
+          <p style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 600, margin: "4px 0 0", color: t.ink }}>{live.light} lux</p>
+          <p style={{ fontSize: 10, margin: 0, color: t.sub }}>Light · {lightLabel}</p>
+        </div>
+      </div>
+
+      <div style={{ padding: "0 24px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🌬️ Air quality (AQI)</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{Math.round(live.aqi)}</span>
+          </div>
+          <MiniChart data={live.aqiTrend} color="#3E7CB1" />
+        </Card>
+
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🌡️ Temperature</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{live.temp}°C</span>
+          </div>
+          <MiniChart data={live.tempTrend} color="#C0432E" />
+        </Card>
+
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>💧 Humidity</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{live.humidity}%</span>
+          </div>
+          <MiniChart data={live.humidityTrend} color="#3E7CB1" />
+        </Card>
+
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🌱 Soil moisture</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{live.soil}%</span>
+          </div>
+          <MiniChart data={live.soilTrend} color="#4C8C5B" />
+        </Card>
+
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>☀️ Ambient light</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{live.light} lux</span>
+          </div>
+          <MiniChart data={live.lightTrend} color="#F0A83C" />
+        </Card>
+      </div>
+
+      <p style={{ padding: "0 24px 24px", fontSize: 10, lineHeight: 1.5, color: t.sub }}>
+        All five readings above update every ~2.5s from the same simulated sensor feed as the rest of the app — this screen just groups the ambient conditions in one place with their own history graphs.
+      </p>
+    </div>
+  );
+}
+
+function AnalyticsScreen({ t, live, back }) {
+  const solarKwh = (live.solar / 100 * 4.8).toFixed(1);
+  const quickStats = [
+    { emoji: "☀️", label: "Solar today", value: `${solarKwh} kWh` },
+    { emoji: "🧑‍🎓", label: "Users today", value: live.users },
+    { emoji: "🌱", label: "CO₂ saved", value: "21 kg" },
+    { emoji: "🌳", label: "Tree health", value: "88/100" },
+    { emoji: "🛠️", label: "System uptime", value: "99.2%" },
+    { emoji: "🌡️", label: "Temperature now", value: `${live.temp}°C` },
+  ];
+  return (
+    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: t.paper }}>
+      <Header title="📊 Analytics" sub="Simulated campus dashboard" t={t} onBack={back} />
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <SimBadge t={t} />
+      </div>
+      <div style={{ padding: "0 24px 12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {quickStats.map((s, i) => (
+          <div key={i} style={{ borderRadius: 12, border: `1px solid ${t.border}`, padding: 12, background: t.card }}>
+            <span style={{ fontSize: 13 }}>{s.emoji}</span>
+            <p style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 600, margin: "4px 0 0", color: t.ink }}>{s.value}</p>
+            <p style={{ fontSize: 10, margin: 0, color: t.sub }}>{s.label}</p>
+          </div>
+        ))}
+      </div>
+      <div style={{ padding: "0 24px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🔋 Battery history</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{Math.round(live.battery)}%</span>
+          </div>
+          <MiniChart data={live.battTrend} color="#4C8C5B" />
+        </Card>
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>📶 Wi-Fi usage (Mbps)</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>↓{live.down} · ↑{live.up}</span>
+          </div>
+          <div style={{ width: "100%", height: 90 }}><ChartFull data={live.downTrend} color="#3E7CB1" data2={live.upTrend} color2="#4C8C5B" /></div>
+          <div style={{ display: "flex", gap: 12, paddingBottom: 8, fontSize: 10, color: t.sub }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#3E7CB1" }} />Download</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: "#4C8C5B" }} />Upload</span>
+          </div>
+        </Card>
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🌬️ AQI trend</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{Math.round(live.aqi)}</span>
+          </div>
+          <MiniChart data={live.aqiTrend} color="#3E7CB1" />
+        </Card>
+        <Card t={t}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 12 }}>
+            <span style={{ fontSize: 12, fontWeight: 500, color: t.ink }}>🌡️ Temperature trend</span>
+            <span style={{ fontSize: 11, fontFamily: "monospace", color: t.sub }}>{live.temp}°C</span>
+          </div>
+          <MiniChart data={live.tempTrend} color="#C0432E" />
+        </Card>
+      </div>
+      <p style={{ padding: "0 24px 24px", fontSize: 10, lineHeight: 1.5, color: t.sub }}>
+        Solar energy, CO₂ saved, health score, and uptime are estimated for this prototype; battery, Wi-Fi, AQI, and temperature graphs track the simulated sensor feed. No hardware is connected.
+      </p>
+    </div>
+  );
+}
+
+/* ---------- skeleton ---------- */
+function SkeletonBlock({ w, h, t }) {
+  return <div className="pulse" style={{ width: w, height: h, borderRadius: 8, background: t.sub + "22" }} />;
+}
+function SkeletonScreen({ t }) {
+  return (
+    <div style={{ height: "100%", width: "100%", display: "flex", flexDirection: "column", padding: "32px 24px 0", gap: 16, background: t.paper }}>
+      <SkeletonBlock w="60%" h={18} t={t} />
+      <div style={{ display: "flex", gap: 16, justifyContent: "center", padding: "8px 0" }}>
+        <SkeletonBlock w={80} h={80} t={t} /><SkeletonBlock w={80} h={80} t={t} /><SkeletonBlock w={80} h={80} t={t} />
+      </div>
+      <div style={{ borderRadius: 16, border: `1px solid ${t.border}`, padding: 16, display: "flex", flexDirection: "column", gap: 12, background: t.card }}>
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <SkeletonBlock w={32} h={32} t={t} /><SkeletonBlock w="50%" h={12} t={t} />
+          </div>
+        ))}
+      </div>
+      <SkeletonBlock w="100%" h={44} t={t} />
+    </div>
+  );
+}
+
+/* ---------- app shell ---------- */
+function App() {
+  const [screen, setScreen] = useState("Home");
+  const [dark, setDark] = useState(false);
+  const [booting, setBooting] = useState(true);
+  const t = theme(dark);
+
+  useEffect(() => { const id = setTimeout(() => setBooting(false), 1200); return () => clearTimeout(id); }, []);
+
+  const [live, setLive] = useState({
+    battery: 92, solar: 78, aqi: 64, temp: 31, users: 18,
+    signal: -52, down: 86, up: 24, ping: 18,
+    humidity: 61, soil: 42, light: 780,
+    battTrend: [{ v: 90 }, { v: 91 }, { v: 92 }],
+    solarTrend: [{ v: 76 }, { v: 77 }, { v: 78 }],
+    tempTrend: [{ v: 30 }, { v: 31 }, { v: 31 }],
+    aqiTrend: [{ v: 62 }, { v: 63 }, { v: 64 }],
+    downTrend: [{ v: 80 }, { v: 83 }, { v: 86 }],
+    upTrend: [{ v: 22 }, { v: 23 }, { v: 24 }],
+    pingTrend: [{ v: 20 }, { v: 19 }, { v: 18 }],
+    humidityTrend: [{ v: 59 }, { v: 60 }, { v: 61 }],
+    soilTrend: [{ v: 41 }, { v: 42 }, { v: 42 }],
+    lightTrend: [{ v: 760 }, { v: 770 }, { v: 780 }],
+  });
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setLive((prev) => {
+        const battery = clamp(prev.battery + (prev.solar > 40 ? 1 : -1) * (0.3 + Math.random() * 0.8), 5, 100);
+        const solar = clamp(prev.solar + (Math.random() * 6 - 3), 0, 100);
+        const aqi = clamp(prev.aqi + (Math.random() * 4 - 2), 30, 100);
+        const temp = clamp(prev.temp + (Math.random() * 0.6 - 0.3), 24, 38);
+        const users = clamp(Math.round(prev.users + (Math.random() * 4 - 2)), 3, 40);
+        const signal = clamp(Math.round(prev.signal + (Math.random() * 4 - 2)), -80, -40);
+        const down = clamp(Math.round(prev.down + (Math.random() * 10 - 5)), 20, 150);
+        const up = clamp(Math.round(prev.up + (Math.random() * 6 - 3)), 5, 60);
+        const ping = clamp(Math.round(prev.ping + (Math.random() * 6 - 3)), 8, 60);
+        const humidity = clamp(Math.round(prev.humidity + (Math.random() * 4 - 2)), 30, 90);
+        const soil = clamp(Math.round(prev.soil + (Math.random() * 2 - 1)), 15, 70);
+        const light = clamp(Math.round(prev.light + (Math.random() * 60 - 30)), 50, 1200);
+        return {
+          battery, solar, aqi, temp: Math.round(temp * 10) / 10, users, signal, down, up, ping, humidity, soil, light,
+          battTrend: [...prev.battTrend.slice(-9), { v: battery }],
+          solarTrend: [...prev.solarTrend.slice(-9), { v: solar }],
+          tempTrend: [...prev.tempTrend.slice(-9), { v: temp }],
+          aqiTrend: [...prev.aqiTrend.slice(-9), { v: aqi }],
+          downTrend: [...prev.downTrend.slice(-9), { v: down }],
+          upTrend: [...prev.upTrend.slice(-9), { v: up }],
+          pingTrend: [...prev.pingTrend.slice(-9), { v: ping }],
+          humidityTrend: [...prev.humidityTrend.slice(-9), { v: humidity }],
+          soilTrend: [...prev.soilTrend.slice(-9), { v: soil }],
+          lightTrend: [...prev.lightTrend.slice(-9), { v: light }],
+        };
+      });
+    }, 2500);
+    return () => clearInterval(id);
+  }, []);
+
+  /* ---------- backend integration (Phase C) ----------
+     Polls the local ComfortNet backend every 5s. If it's reachable, real
+     (still simulated-at-source, per the backend's own disclosure) values
+     from /telemetry/tree-01/latest override the local random-walk above.
+     If unreachable, the app keeps running on the original local
+     simulation with no error shown to the user — see SimBadge labels. */
+  const [backend, setBackend] = useState({ connected: false, dataSource: "local-fallback" });
+
+  useEffect(() => {
+    let cancelled = false;
+    const NET_SIGNAL_MAP = { online: -50, degraded: -70, offline: -88 };
+    const poll = async () => {
+      const healthy = await checkBackendHealth();
+      if (cancelled) return;
+      if (!healthy) { setBackend({ connected: false, dataSource: "local-fallback" }); return; }
+      const reading = await fetchLatestTelemetry(DEMO_NODE_ID);
+      if (cancelled) return;
+      if (!reading) { setBackend({ connected: false, dataSource: "local-fallback" }); return; }
+      setBackend({ connected: true, dataSource: "backend-simulated" });
+      setLive((prev) => {
+        const battery = reading.battery_percent ?? prev.battery;
+        const solar = reading.solar_power ?? prev.solar;
+        const temp = reading.temperature ?? prev.temp;
+        const humidity = reading.humidity ?? prev.humidity;
+        const aqi = reading.aqi_pm25 ?? prev.aqi;
+        const soil = reading.soil_moisture ?? prev.soil;
+        const light = reading.light_level ?? prev.light;
+        const signal = NET_SIGNAL_MAP[reading.network_status] ?? prev.signal;
+        return {
+          ...prev, battery, solar, temp, humidity, aqi, soil, light, signal,
+          battTrend: [...prev.battTrend.slice(-9), { v: battery }],
+          solarTrend: [...prev.solarTrend.slice(-9), { v: solar }],
+          tempTrend: [...prev.tempTrend.slice(-9), { v: temp }],
+          aqiTrend: [...prev.aqiTrend.slice(-9), { v: aqi }],
+          humidityTrend: [...prev.humidityTrend.slice(-9), { v: humidity }],
+          soilTrend: [...prev.soilTrend.slice(-9), { v: soil }],
+          lightTrend: [...prev.lightTrend.slice(-9), { v: light }],
+        };
+      });
+    };
+    poll();
+    const id = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  /* ---------- ML prediction polling ----------
+     STATUS: IMPLEMENTED — calls the real /ml/predict/tree-01 endpoint,
+     backed by a RandomForestClassifier trained on synthetic telemetry
+     (ml/train_model.py). Only polls when the backend is connected; if the
+     ML endpoint itself fails (e.g. model artifact missing), shows an
+     explicit "ML unavailable" state rather than a stale/fake prediction. */
+  const [ml, setMl] = useState({ status: "unavailable", prediction: null, fetchedAt: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    const pollMl = async () => {
+      if (!backend.connected) {
+        if (!cancelled) setMl({ status: "unavailable", prediction: null, fetchedAt: null });
+        return;
+      }
+      const result = await fetchMlPrediction(DEMO_NODE_ID);
+      if (cancelled) return;
+      if (!result) {
+        setMl({ status: "unavailable", prediction: null, fetchedAt: null });
+        return;
+      }
+      setMl({ status: "ok", prediction: result, fetchedAt: new Date() });
+    };
+    pollMl();
+    const id = setInterval(pollMl, 6000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [backend.connected]);
+
+  const go = (s) => setScreen(s);
+  const back = () => setScreen("Home");
+
+  const render = () => {
+    switch (screen) {
+      case "Splash": return <Splash />;
+      case "Login": return <LoginScreen t={t} />;
+      case "Home": return <HomeScreen go={go} t={t} live={live} backend={backend} />;
+      case "Tree Detail": return <TreeDetailScreen t={t} live={live} back={back} backend={backend} ml={ml} />;
+      case "Environment": return <EnvironmentScreen t={t} live={live} back={back} />;
+      case "Analytics": return <AnalyticsScreen t={t} live={live} back={back} />;
+      case "Map": return <MapScreen t={t} />;
+      case "Scan": return <ScanScreen t={t} back={back} />;
+      case "Alerts": return <AlertsScreen t={t} />;
+      case "Plans": return <RechargeScreen t={t} />;
+      case "Assistant": return <AssistantScreen t={t} live={live} />;
+      case "Emergency": return <EmergencyScreen t={t} back={back} />;
+      case "Settings": return <SettingsScreen t={t} dark={dark} setDark={setDark} back={() => setScreen("Profile")} go={go} />;
+      case "Admin": return <AdminScreen t={t} back={() => setScreen("Settings")} backend={backend} ml={ml} />;
+      case "Profile": return <ProfileScreen t={t} go={go} />;
+      default: return null;
+    }
+  };
+
+  const showBottomNav = tabs.some((tb) => tb.key === screen) && !booting;
+
+  return (
+    <div style={{ minHeight: "100vh", width: "100%", background: "#EFEAE0", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "40px 0", gap: 24 }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24 }}>
+        <div style={{ position: "relative", width: 300, height: 640, borderRadius: 40, background: "#1E3A2B", padding: 12, boxShadow: "0 20px 50px rgba(0,0,0,.35)" }}>
+          <div style={{ width: "100%", height: "100%", borderRadius: 28, overflow: "hidden", position: "relative", display: "flex", flexDirection: "column", background: t.paper }}>
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 24, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10 }}>
+              <div style={{ width: 96, height: 16, background: "#1E3A2B", borderRadius: 999, marginTop: 4 }} />
+            </div>
+            <div style={{ flex: 1, overflow: "hidden" }}>{booting ? <SkeletonScreen t={t} /> : render()}</div>
+            {showBottomNav && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", borderTop: `1px solid ${t.border}`, padding: "8px 0", background: t.card }}>
+                {tabs.map(({ key, emoji }) => (
+                  <button key={key} onClick={() => setScreen(key)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "6px 6px", minWidth: 42, background: "none" }}>
+                    <span style={{ fontSize: 16, filter: screen === key ? "none" : "grayscale(60%) opacity(0.7)" }}>{emoji}</span>
+                    <span style={{ fontSize: 8, lineHeight: 1, color: screen === key ? "#F0A83C" : t.sub }}>{key === "Assistant" ? "Assist" : key}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 8, maxWidth: 340 }}>
+          {devScreens.map((s) => (
+            <button key={s} onClick={() => setScreen(s)} style={{ padding: "6px 12px", borderRadius: 999, fontSize: 11, fontWeight: 500, border: "1px solid #E7E0D0", background: screen === s ? "#1E3A2B" : "#FFFFFF", color: screen === s ? "#F0A83C" : "#3D2B1F" }}>{s}</button>
+          ))}
+        </div>
+        <p style={{ fontSize: 11, color: "#6B5A45", textAlign: "center", padding: "0 24px", maxWidth: 340 }}>
+          Bottom nav drives the main app · onboarding-only screens (Splash/Login) are above · data refreshes every ~2.5s · try typing a question on Assistant
+        </p>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
